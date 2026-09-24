@@ -207,6 +207,8 @@ python3 - "$BASE" "$STATE/cluster.env.new" "${!ENVSET[@]}" -- "${ENVSET[@]}" <<'
 import re, sys
 a = sys.argv[1:]; src, dst = a[0], a[1]; sep = a.index("--"); keys, vals = a[2:sep], a[sep + 1:]
 text = open(src).read()
+# older files put two assignments on one line ("A=x;   B=y"); split them so each key can be replaced on its own
+text = re.sub(r"^([A-Z0-9_]+=[^;\n#]*?);[ \t]+([A-Z0-9_]+=)", r"\1\n\2", text, flags=re.M)
 for k, v in zip(keys, vals):
     line = f"{k}={v}"
     if re.search(rf"^{k}=", text, re.M):
@@ -315,7 +317,7 @@ step "Summary"
 {
   echo "# setup report $(date -Is) — $R_NAME"
   echo "nodes: ${NODES[*]}"
-  for ((i = 0; i < N; i++)); do echo "${NODES[$i]}: $(j "$STATE/probe-$i.json" 'f"{d[\"dgx\"] or d[\"os\"]} / {d[\"dgx_build\"]} / {d[\"gpu\"]} / {d[\"mem_total_gib\"]} GiB"')"; done
+  for ((i = 0; i < N; i++)); do echo "${NODES[$i]}: $(j "$STATE/probe-$i.json" '" / ".join([d["dgx"] or d["os"], d["dgx_build"], d["gpu"], str(d["mem_total_gib"]) + " GiB"])')"; done
   [ -f "$STATE/topology.json" ] && [ "$N" -gt 1 ] && python3 -c "import json; [print('cable', l['a']['node'], l['a']['netdev'], l['a']['ip'], '<->', l['b']['node'], l['b']['netdev'], l['b']['ip']) for l in json.load(open('$STATE/topology.json'))['links']]"
   for r in "${REPORT[@]}"; do echo "$r"; done
   for w in "${WARNS[@]}"; do echo "WARN $w"; done
@@ -326,7 +328,7 @@ if [ "${#FAILS[@]}" -gt 0 ]; then
   printf '\n%s%d item(s) to fix:%s\n' "$RD" "${#FAILS[@]}" "$N0"; for f in "${FAILS[@]}"; do echo "  - $f"; done
   exit 1
 fi
-printf '\n%sReady.%s ' "$G" "$N0"
+[ "$CHECK" = 1 ] && printf '\n%sCheck complete — nothing to fix.%s ' "$G" "$N0" || printf '\n%sReady.%s ' "$G" "$N0"
 [ "${#WARNS[@]}" -gt 0 ] && printf '(%d warning(s) above) ' "${#WARNS[@]}"
 rv="R_RUN_$N"; echo; echo "Start it with:  ${!rv:-./run.sh}"
 [ -n "${R_SMOKE:-}" ] && echo "Then check it:  $R_SMOKE"
