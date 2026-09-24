@@ -243,6 +243,10 @@ done
 nccl_run() {  # profile world
   local prof=$1 W=$2 r port=$((29500 + RANDOM % 400)) out rc=0
   source "$KIT_DIR/lib/nccl.sh"
+  # the kit must already be on every node: a missing -v source makes Docker create it as an empty root-owned dir
+  for ((r = 0; r < W; r++)); do
+    on "$r" "test -f $(printf %q "$KIT_DIR/lib/nccl_check.py")" || { bad "${NODES[$r]}: $KIT_DIR missing (repo not copied)"; return; }
+  done
   for ((r = W - 1; r >= 0; r--)); do
     "nccl_env_$prof" "$r"
     on "$r" "docker rm -f kit_nccl_check >/dev/null 2>&1; docker run -d --name kit_nccl_check --gpus all --network host --ipc host \
