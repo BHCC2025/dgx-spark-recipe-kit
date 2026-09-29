@@ -9,6 +9,15 @@ git clone https://github.com/BHCC2025/<recipe>.git && cd <recipe>
 ./run.sh tpN
 ```
 
+## Recipes using the kit
+
+| Recipe | Sparks | Engine | Single-stream decode, code (fastest setup) |
+|---|---|---|---|
+| [Qwen3.8-Flash-Next-DGX-Spark-TP1-TP3](https://github.com/BHCC2025/Qwen3.8-Flash-Next-DGX-Spark-TP1-TP3) | 1–3 | vLLM | 57.4 tok/s (3 Sparks) |
+| [Gemma-4-31B-IT-DGX-Spark-TP1-TP2](https://github.com/BHCC2025/Gemma-4-31B-IT-DGX-Spark-TP1-TP2) | 1–2 | vLLM | 40.6 tok/s (2 Sparks) |
+
+Every number is benched on our own Sparks with the recipe's `bench/bench.sh`; see each recipe's `bench/results/`.
+
 ## What `setup.sh` does
 
 | Step | What it does | Changes anything? |
@@ -70,8 +79,10 @@ Rules:
 
 ## Updating the kit inside a recipe repo
 
+Recipes vendor a tagged release, never `main`:
+
 ```bash
-git subtree pull --prefix kit git@github.com:BHCC2025/dgx-spark-recipe-kit.git main --squash
+git subtree pull --prefix kit https://github.com/BHCC2025/dgx-spark-recipe-kit.git vX.Y.Z --squash
 ```
 
 ## License

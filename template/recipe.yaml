@@ -5,6 +5,10 @@ model:
   hf_repo: <org>/<model>
   revision: <full commit sha>
   size_on_disk_gb: 0
+  # draft:                   # optional: separate speculative-decoding draft model, fetched by a prepare step
+  #   hf_repo: <org>/<draft>
+  #   revision: <full commit sha>
+  #   size_on_disk_gb: 0
 engine:
   name: vllm
   image: <image:tag>
@@ -28,4 +32,10 @@ recipes:
     command: ./run.sh tp1
     max_model_len: 0
     decode_tok_s: {code: 0, prose: 0, source: bench/results/<date>-tp1.md}
+    prefill_cold_8k_tok_s: 0
     verified: false
+    # verified_date: <YYYY-MM-DD>   # set together with verified: true
+  # - id: tp2
+  #   nodes: 2
+  #   cabling: one QSFP cable       # TP3: QSFP triangle
+  #   (same fields as tp1)
