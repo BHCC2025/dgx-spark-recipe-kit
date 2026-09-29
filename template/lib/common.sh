@@ -76,8 +76,10 @@ build_misc() {
 
 build_all() { build_spec; build_misc; }
 
-check_model() {  # dir
-  test -f "$1/config.json" || { echo "MODEL MISSING at $1 on $(hostname) — run ./setup.sh" >&2; exit 3; }
+check_model() {  # dir — DRY_RUN=1 only notes a missing model, so the commands can be printed before any download
+  [ -f "$1/config.json" ] && return 0
+  if [ "${DRY_RUN:-0}" = 1 ]; then echo "# note: no model at $1 on $(hostname) yet — ./setup.sh downloads it" >&2; return 0; fi
+  echo "MODEL MISSING at $1 on $(hostname) — run ./setup.sh" >&2; exit 3
 }
 
 # DRY_RUN=1 prints the docker command instead of running it.
