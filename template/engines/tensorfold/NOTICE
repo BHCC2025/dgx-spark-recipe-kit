@@ -1,0 +1,17 @@
+{{REPO}}
+Copyright {{YEAR}} BHCC2025. Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+All code in this repository is original, except:
+
+1. kit/ — dgx-spark-recipe-kit (BHCC2025, Apache-2.0), vendored at a tagged release via git subtree. It includes the
+   shared benchmark and smoke test that bench/bench.sh and scripts/smoke-test.sh run.
+2. TODO: every vendored file or patch, with its source repository, commit, author and licence
+   (and a patches/<name>/PROVENANCE.md for each patch). Delete this item if there are none.
+
+The engine is not part of this repository. docker/Dockerfile installs TensorFold (https://github.com/ashhart/TensorFold,
+by @ashhart, Apache-2.0) from upstream at {{TF_VERSION}} (commit {{TF_COMMIT}}), unmodified, into
+NVIDIA's PyTorch container ({{BASE_IMAGE}}, governed by NVIDIA's software licence terms, which the
+container prints when it starts).
+
+This repository contains no model weights. ./setup.sh downloads {{HF_REPO}} from Hugging Face, under the
+model's own licence.

@@ -65,9 +65,10 @@ sync_repo() {
 # ---------------------------------------------------------------- recipe
 [ -f "$REPO_DIR/recipe.yaml" ] || { echo "no recipe.yaml in $REPO_DIR"; exit 2; }
 RV=$(python3 "$KIT_DIR/lib/recipe.py" "$REPO_DIR/recipe.yaml") || { echo "could not read recipe.yaml (see above)"; exit 2; }
+R_BUILD=""; R_DRAFT_REPO=""; R_DRAFT_REV=""; R_DRAFT_DIR=""
 eval "$RV"
 printf '%s%s%s — setup%s\n' "$B" "$R_NAME" "$N0" "$([ "$CHECK" = 1 ] && echo ' (check only, no changes)')"
-info "model $R_HF_REPO@${R_REVISION:0:8} · image $R_IMAGE · TP sizes: $R_TP"
+info "model $R_HF_REPO@${R_REVISION:0:8}${R_DRAFT_REPO:+ + draft $R_DRAFT_REPO@${R_DRAFT_REV:0:8}} · image $R_IMAGE$([ -n "$R_BUILD" ] && echo " (built from $R_BUILD)") · TP sizes: $R_TP"
 info "log $LOG"
 [ -f "$REPO_DIR/cluster.env" ] && source "$REPO_DIR/cluster.env"   # previous answers become defaults
 
@@ -103,11 +104,12 @@ if [ "$CHECK" = 0 ] && [ "$N" -gt 1 ]; then sync_repo && ok "repo copied to the 
 probe_all() {
   local i nb=(); [ "$N" = 1 ] && nb=(--no-neighbors)
   for ((i = 0; i < N; i++)); do
-    on_py "$i" "$KIT_DIR/lib/probe.py" --image "$R_IMAGE" --model-dir "$MODEL_DIR" "${nb[@]}" > "$STATE/probe-$i.json" \
+    on_py "$i" "$KIT_DIR/lib/probe.py" --image "$R_IMAGE" --model-dir "$MODEL_DIR" ${DRAFT_DIR:+--draft-dir "$DRAFT_DIR"} "${nb[@]}" > "$STATE/probe-$i.json" \
       || { bad "probe failed on ${NODES[$i]}"; return 1; }
   done
 }
 MODEL_DIR="${MODEL_DIR:-$R_MODEL_DIR}"
+if [ -n "$R_DRAFT_REPO" ]; then DRAFT_DIR="${DRAFT_DIR:-$R_DRAFT_DIR}"; else DRAFT_DIR=""; fi
 step "2. Inspecting each Spark"
 probe_all || exit 1
 for ((i = 0; i < N; i++)); do
@@ -149,9 +151,9 @@ else warn "no hf CLI — the model download step will be skipped"; fi
 
 # Can this machine download the pinned model? One tiny file now, so a gated model or a network problem shows up
 # before anything big happens (check mode too: it lands in a temporary directory that is removed).
-hf_probe() {
+hf_probe() {  # [repo revision] (default: the model)
   local t rc; t=$(mktemp -d)
-  "$HF_BIN" download "$R_HF_REPO" config.json --revision "$R_REVISION" --local-dir "$t" >/dev/null 2>&1; rc=$?
+  "$HF_BIN" download "${1:-$R_HF_REPO}" config.json --revision "${2:-$R_REVISION}" --local-dir "$t" >/dev/null 2>&1; rc=$?
   rm -rf "$t"; return $rc
 }
 if [ -n "$HF_BIN" ] && [ "$(j "$STATE/probe-0.json" 'd["model_state"]')" != complete ]; then
@@ -176,6 +178,10 @@ print("error: " + d["error"] if "error" in d else d.get("gated"))' 2>/dev/null)
       bad "Hugging Face: cannot download $R_HF_REPO@${R_REVISION:0:8} (check this machine's internet access, DNS or proxy, and the revision in recipe.yaml)"
     fi
   fi
+fi
+if [ -n "$HF_BIN" ] && [ -n "$R_DRAFT_REPO" ] && [ "$(j "$STATE/probe-0.json" 'd["draft_state"]')" != complete ]; then
+  if hf_probe "$R_DRAFT_REPO" "$R_DRAFT_REV"; then ok "Hugging Face: draft model $R_DRAFT_REPO@${R_DRAFT_REV:0:8} is downloadable from here"
+  else bad "Hugging Face: cannot download the draft model $R_DRAFT_REPO@${R_DRAFT_REV:0:8} (internet access, or the draft revision in recipe.yaml)"; fi
 fi
 
 # ---------------------------------------------------------------- 4. network
@@ -239,6 +245,7 @@ if [ "${lowdisk:-0}" = 1 ] || { [ "$CHECK" = 0 ] && [ "$YES" = 0 ] && [ "$(j "$S
   if [ "$REPLY" != "$MODEL_DIR" ]; then MODEL_DIR=$REPLY; probe_all; ok "re-checked space for $MODEL_DIR"; fi
 fi
 ENVSET[MODEL_DIR]=$(printf %q "$MODEL_DIR")
+[ -n "$R_DRAFT_REPO" ] && ENVSET[DRAFT_DIR]=$(printf %q "$DRAFT_DIR")
 BASE="$REPO_DIR/cluster.env"; [ -f "$BASE" ] || BASE="$REPO_DIR/cluster.env.example"
 python3 - "$BASE" "$STATE/cluster.env.new" "${!ENVSET[@]}" -- "${ENVSET[@]}" <<'PY'
 import re, sys
@@ -264,13 +271,13 @@ else
 fi
 # The tests below use what ./run.sh will use: cluster.env when there is one (a key it lacks comes from the detected
 # values), otherwise the detected values. The nodes and model directory chosen in this run are kept.
-_nodes=("${NODES[@]}"); _mdir=$MODEL_DIR
+_nodes=("${NODES[@]}"); _mdir=$MODEL_DIR; _ddir=$DRAFT_DIR
 source "$STATE/cluster.env.new"
 if [ -f "$REPO_DIR/cluster.env" ]; then
   source "$REPO_DIR/cluster.env"
   cmp -s "$REPO_DIR/cluster.env" "$STATE/cluster.env.new" || info "the tests below use cluster.env as it is (what ./run.sh uses), not the proposal"
 fi
-NODES=("${_nodes[@]}"); MODEL_DIR=$_mdir
+NODES=("${_nodes[@]}"); MODEL_DIR=$_mdir; DRAFT_DIR=$_ddir
 [ "$CHECK" = 0 ] && [ "$N" -gt 1 ] && sync_repo
 
 # ---------------------------------------------------------------- 6. image
@@ -281,8 +288,24 @@ for ((i = 0; i < N; i++)); do
     warn "$h: image check skipped until Docker works for $(j "$STATE/probe-$i.json" 'd["user"]') (see step 3)"; continue
   fi
   if [ "$(j "$STATE/probe-$i.json" 'd["image_present"]')" != True ] && ! on "$i" "docker image inspect $R_IMAGE >/dev/null 2>&1"; then
-    if ask_yn "Pull $R_IMAGE on $h (~20 GB)?" y; then on "$i" "docker pull -q $R_IMAGE" >/dev/null && ok "$h: image pulled" || { bad "$h: docker pull failed"; continue; }
-    else bad "$h: image missing"; continue; fi
+    if [ -z "$R_BUILD" ]; then
+      if ask_yn "Pull $R_IMAGE on $h (~20 GB)?" y; then on "$i" "docker pull -q $R_IMAGE" >/dev/null && ok "$h: image pulled" || { bad "$h: docker pull failed"; continue; }
+      else bad "$h: image missing"; continue; fi
+    elif [ "$i" = 0 ]; then
+      # Built here from the recipe's Dockerfile (an engine with no published image): once, on the head.
+      bf="$REPO_DIR/$R_BUILD"
+      if ask_yn "Build $R_IMAGE on $h from $R_BUILD (pulls its base image, ~20 GB; 5-15 minutes)?" y; then
+        info "building; log: $STATE/build.log"
+        if docker build -t "$R_IMAGE" -f "$bf" "$(dirname "$bf")" > "$STATE/build.log" 2>&1; then ok "$h: image built"
+        else bad "$h: docker build failed"; tail -15 "$STATE/build.log" | sed 's/^/          /'; continue; fi
+      else bad "$h: image missing (./setup.sh builds it from $R_BUILD)"; continue; fi
+    else
+      # Workers get the head's build, so every node runs the identical image.
+      if ! docker image inspect "$R_IMAGE" >/dev/null 2>&1; then bad "$h: image missing; build it on the head first"; continue; fi
+      if ask_yn "Copy $R_IMAGE from the head to $h (docker save | docker load over SSH, ~$(( $(docker image inspect -f '{{.Size}}' "$R_IMAGE") / 1000000000 )) GB)?" y; then
+        docker save "$R_IMAGE" | ssh -o BatchMode=yes "$h" docker load >/dev/null && ok "$h: image copied from the head" || { bad "$h: copying the image failed"; continue; }
+      else bad "$h: image missing"; continue; fi
+    fi
   fi
   g=$(on "$i" "docker run --rm --gpus all --entrypoint nvidia-smi $R_IMAGE -L 2>&1" | head -1)
   [[ "$g" == GPU* ]] && ok "$h: image present, GPU visible in the container ($g)" || bad "$h: GPU not visible inside the container: $g"
@@ -352,6 +375,25 @@ else
       && ok "downloaded to $MODEL_DIR" \
       || bad "download failed (see the Hugging Face check in step 3)"
   else warn "head: $R_HF_REPO not downloaded yet ($MODEL_DIR)"
+  fi
+  if [ -n "$R_DRAFT_REPO" ]; then
+    if [ "$(j "$STATE/probe-0.json" 'd["draft_state"]')" = complete ]; then ok "head: draft model $R_DRAFT_REPO at $DRAFT_DIR"
+    elif [ -z "$HF_BIN" ]; then bad "no hf CLI to download the draft model with"
+    elif ask_yn "Download the draft model $R_DRAFT_REPO@${R_DRAFT_REV:0:8} to $DRAFT_DIR?" y; then
+      mkdir -p "$DRAFT_DIR" && "$HF_BIN" download "$R_DRAFT_REPO" --revision "$R_DRAFT_REV" --local-dir "$DRAFT_DIR" \
+        && ok "draft model downloaded to $DRAFT_DIR" || bad "draft model download failed"
+    else warn "head: draft model not downloaded yet ($DRAFT_DIR)"
+    fi
+    if [ "$(python3 "$KIT_DIR/lib/probe.py" --no-neighbors --draft-dir "$DRAFT_DIR" | python3 -c 'import json,sys; print(json.load(sys.stdin)["draft_state"])')" = complete ]; then
+      for ((i = 1; i < N; i++)); do
+        if [ "$(j "$STATE/probe-$i.json" 'd["draft_state"]')" = complete ]; then ok "${NODES[$i]}: draft model present"; continue; fi
+        if ask_yn "Copy the draft model to ${NODES[$i]} (over SSH)?" y; then
+          on "$i" "mkdir -p $(printf %q "$DRAFT_DIR")" && rsync -a --exclude .cache/ "$DRAFT_DIR/" "${NODES[$i]}:$DRAFT_DIR/" \
+            && ok "${NODES[$i]}: draft model copied" || bad "${NODES[$i]}: draft model copy failed"
+        else warn "${NODES[$i]}: draft model not copied yet"
+        fi
+      done
+    fi
   fi
   if [ "$(python3 "$KIT_DIR/lib/probe.py" --no-neighbors --model-dir "$MODEL_DIR" | python3 -c 'import json,sys; print(json.load(sys.stdin)["model_state"])')" = complete ]; then
     for ((i = 1; i < N; i++)); do

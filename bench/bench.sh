@@ -7,7 +7,9 @@
 #   cold prefill (unique prompts, so no prefix-cache hits):  8K x3, 28K x2
 #   smoke test (correctness)
 # LONG=1 adds the long-context needle test at 128K/256K (and 512K/900K when the server's max-model-len allows,
-# plus 988K on a 1M server).
+# plus 988K on a 1M server). BENCH_MAXLEN=N stands in for a server whose /v1/models reports no max_model_len.
+# CONCURRENT=1,8 adds the multi-user test (TensorFold recipes: the engine's own tools/bench_concurrent.py, run inside
+# the recipe's container; greedy, every concurrent reply checked against the same request alone).
 # Exits non-zero if the smoke test fails (after printing every result).
 set -euo pipefail
 LABEL="${1:?label, e.g. tp3}"
@@ -32,7 +34,11 @@ until curl -sf "$B/models" >/dev/null; do
   if [ -n "${NAME:-}" ] && ! docker ps --format '{{.Names}}' | grep -qx "$NAME"; then echo "container $NAME exited"; docker logs "$NAME" 2>&1 | tail -30; exit 1; fi
   sleep 15; done
 M=$(curl -sf "$B/models" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])')
-MAXLEN=$(curl -sf "$B/models" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0].get("max_model_len", 0))')
+MAXLEN=$(curl -sf "$B/models" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0].get("max_model_len") or 0)')
+[ "$MAXLEN" = 0 ] && [ -n "${BENCH_MAXLEN:-}" ] && MAXLEN=$BENCH_MAXLEN
+# engine.name from recipe.yaml (vllm when there is none)
+ENGINE=$(awk '/^engine:/ {e = 1; next} e && /^[^ #]/ {e = 0} e && $1 == "name:" {print $2; exit}' "$REPO_DIR/recipe.yaml" 2>/dev/null)
+ENGINE=${ENGINE:-vllm}
 
 # Results are filed in the recipe that owns this bench, so the served model must be that recipe's model: its
 # recipe.yaml served_model_name or a SERVED_NAMES alias from its cluster.env. To bench anything else, say where the
@@ -65,5 +71,23 @@ if [ "${LONG:-0}" = 1 ]; then
   echo "--- long-context needle test ${sizes[*]}K"; python3 "$D/bench-longctx.py" "$B" "$M" --ktok "${sizes[@]}"
 fi
 echo "--- smoke test"; SMOKE=0; bash "$SMOKE_SH" "$B" || SMOKE=$?
+CONC=0
+if [ -n "${CONCURRENT:-}" ]; then
+  if [ "$ENGINE" != tensorfold ]; then
+    echo "--- concurrent users: CONCURRENT is only wired up for TensorFold recipes so far (engine here: $ENGINE)"
+  elif [ -z "${NAME:-}" ] || ! docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
+    echo "--- concurrent users: skipped, the server container ${NAME:-(NAME unset)} is not running on this machine"; CONC=1
+  else
+    TF_TOOLS="${TF_TOOLS:-/opt/tensorfold/tools}"; CJ="$RES/$(date +%F)-$LABEL-concurrent.json"
+    echo "--- concurrent users $CONCURRENT: TensorFold $TF_TOOLS/bench_concurrent.py in $NAME (code + chat prompts, greedy, 256 tokens, 3 reps, --alone)"
+    docker exec "$NAME" python3 "$TF_TOOLS/bench_concurrent.py" "${B%/v1}" "$M" --levels "$CONCURRENT" --temperatures 0 \
+      --reps 3 --alone --label "$LABEL" --output /tmp/bench-concurrent.json || CONC=$?
+    if [ "$CONC" = 0 ] && docker cp "$NAME:/tmp/bench-concurrent.json" "$CJ" >/dev/null; then
+      python3 "$D/concurrent-summary.py" "$CJ" || CONC=$?
+      echo "raw: ${CJ#"$REPO_DIR"/}"
+    fi
+  fi
+fi
 echo "=== done $(date -Is) -> ${LOG#"$REPO_DIR"/}"
 [ "$SMOKE" = 0 ] || { echo "SMOKE TEST FAILED (exit $SMOKE)"; exit 1; }
+[ "$CONC" = 0 ] || { echo "CONCURRENT TEST FAILED (exit $CONC)"; exit 1; }

@@ -30,9 +30,9 @@ Every number is benched on our own Sparks with the recipe's `bench/bench.sh`; se
 | 3. Dependencies | Docker without sudo, rsync, perftest, the Hugging Face CLI; test-downloads one small file of the model (a gated model gets its licence link and a login prompt) | offers `apt install`, docker group, a local venv for `hf` |
 | 4. Cabling | Works out which port is cabled to which node (IPv6 all-nodes ping, so no IPv4 is needed yet), checks the shape (1 cable / triangle), checks IPs and the RoCE v2 GID, pings every cable | offers to assign fabric IPs (NetworkManager connection or netplan, only on those ports) |
 | 5. cluster.env | Picks the model directory (checks free space on every node) and writes the detected values into `cluster.env` | shows a diff, asks |
-| 6. Image | Pulls the pinned image on every node and checks the GPU is visible inside it | offers `docker pull` |
+| 6. Image | Pulls the pinned image on every node, or for an engine with no published image (TensorFold) builds it once on the head from the recipe's `docker/Dockerfile` and copies it to the workers (`docker save \| docker load`); checks the GPU is visible inside it | offers `docker pull` / `docker build` / the copy |
 | 7. Network test | `ib_write_bw` on every cable, then an NCCL all-reduce **inside the recipe's image with the recipe's NCCL settings** | no (runs a short-lived container) |
-| 8. Model | `hf download` at the pinned revision on the head, `rsync` to the workers, then the recipe's prepare commands | asks first |
+| 8. Model | `hf download` at the pinned revision on the head, `rsync` to the workers; the same for a draft model when `recipe.yaml` has `model.draft` + `setup.draft_dir`; then the recipe's prepare commands | asks first |
 
 - `--check` changes nothing and downloads nothing (the network test still runs, in short-lived containers). It
   uses the nodes in `cluster.env` if there is one, and writes `.setup/report.txt`, which is what to attach to an issue.
@@ -44,11 +44,18 @@ Every number is benched on our own Sparks with the recipe's `bench/bench.sh`; se
 - **Every push** runs the hardware-free tests in CI ([tests/](tests/), `bash tests/run.sh`): the cabling logic on
   synthetic 2- and 3-node clusters (including a missing cable, a miswired triangle, a missing RoCE v2 GID and IPv6
   turned off), `new-recipe.sh` for every TP range (no leftover placeholders or markers, every link resolves, `DRY_RUN`
-  prints the right commands), `cluster.env` precedence, the benchmark's model check, and shellcheck.
+  prints the right commands, for vLLM and TensorFold), `cluster.env` precedence, the benchmark's model check, and
+  shellcheck. The vLLM output of `new-recipe.sh` 0.5.0 is byte-identical to 0.4.0's for every TP range.
 - **On real hardware** (three DGX Sparks, DGX OS 7, one cable and a triangle): a brand-new account with no docker
   group, no SSH key, no Hugging Face CLI and a cable with no IP addresses. `setup.sh` added the docker group,
   installed `hf`, found the cable and assigned its IPs, then measured RDMA at 111.6 Gb/s and NCCL at 11.9 GB/s; the
   Gemma recipe then served TP2 and passed its smoke test. `--check` is also exercised on 1, 2 and 3 nodes.
+- **TensorFold path, on real hardware** (2026-10-02): `setup.sh` built the TensorFold image from a generated
+  recipe's `docker/Dockerfile` and checked the GPU inside it; `setup.sh --check` on two Sparks ran RDMA (111.6 Gb/s)
+  and the NCCL all-reduce (12.3 GB/s) inside that image; the Qwen3.8-27B TP2 recipe then served through
+  `./run.sh tp2` and passed `CONCURRENT=1,8 bench/bench.sh` (48 / 48 concurrent replies equal to the request alone).
+  The image copy to a worker (`docker save | docker load`) was run by hand with the same command, not yet through
+  `setup.sh`.
 - **Not tested yet:** other DGX OS releases, machines without NetworkManager (the netplan path), a switch instead of
   direct cables, more than three nodes, and a full first model download on a new account (the download test in
   step 3 is tested with an ungated, a gated and a missing repo). If you try one of these, please open an issue with
@@ -67,9 +74,9 @@ Every number is benched on our own Sparks with the recipe's `bench/bench.sh`; se
 | `lib/recipe.py` | reads `recipe.yaml` for setup |
 | `lib/new_recipe.py` | the generator behind `new-recipe.sh` |
 | `lib/cluster_env.sh` | `load_cluster_env`: a recipe loads `cluster.env` with it, so a value set in the environment wins for one run (`PORT=8001 ./run.sh tp1`) |
-| `bench/` | the shared benchmark (`bench.sh` + its Python helpers) and smoke test. A recipe's `bench/bench.sh` and `scripts/smoke-test.sh` just run these, so every recipe is measured the same way. `bench.sh` refuses to file results under a recipe unless the server is serving that recipe's model; `BENCH_OUT=<dir>` benches anything else |
+| `bench/` | the shared benchmark (`bench.sh` + its Python helpers) and smoke test. `CONCURRENT=1,8` adds a multi-user test (TensorFold recipes: the engine's own `tools/bench_concurrent.py`, run inside the recipe's container, summarised by `concurrent-summary.py`). A recipe's `bench/bench.sh` and `scripts/smoke-test.sh` just run these, so every recipe is measured the same way. `bench.sh` refuses to file results under a recipe unless the server is serving that recipe's model; `BENCH_OUT=<dir>` benches anything else |
 | `new-recipe.sh` | creates a new recipe repo from `template/` (below) |
-| `template/` | the complete starting layout of a recipe repo, with `{{...}}` placeholders that `new-recipe.sh` fills in |
+| `template/` | the complete starting layout of a recipe repo, with `{{...}}` placeholders that `new-recipe.sh` fills in. `template/engines/<engine>/` is laid over it for an engine other than vLLM (today: `tensorfold`) |
 | `tests/` | hardware-free tests, run by CI on every push: `bash tests/run.sh` |
 
 ## Starting a new recipe
@@ -87,12 +94,27 @@ image digest in `recipe.yaml`, and the README text. Checked against the publishe
 launchers pass `docker run` exactly the same arguments as that recipe (draft model off; only their order differs),
 and its TP3 uses exactly the same network wiring as the Qwen3.8-Flash-Next TP3.
 
+For a [TensorFold](https://github.com/ashhart/TensorFold) recipe (TP1 or TP2):
+
+```bash
+dgx-spark-recipe-kit/new-recipe.sh --engine tensorfold --model Qwen3.8-27B --hf TensorFold/Qwen3.8-27B-MLX-4bit \
+    --draft z-lab/Qwen3.8-27B-DFlash2 --tp 2
+```
+
+That creates `Qwen3.8-27B-DGX-Spark-TP2-TensorFold/` (the engine goes in the name as a suffix). TensorFold publishes no
+image, so the recipe gets a `docker/Dockerfile` that installs TensorFold from its upstream repository at a pinned
+release commit, unmodified, into NVIDIA's PyTorch container; `./setup.sh` builds it. The launchers run
+`tensorfold serve` with the kit's pair NCCL profile, the endpoint on rank 0 only, and the same `PARALLEL`, `CONTEXT`,
+`KV_DTYPE` and drafting settings on both ranks. Upstream's code is never copied into a recipe: changes to it go
+upstream as pull requests, and a recipe that needs one before it is merged ships it as a small patch with PROVENANCE.
+
 ## Recipe repo standard
 
 Every recipe repo looks like this:
 
 ```
-<Model>-DGX-Spark-TP<min>-TP<max>/     name always carries the TP range (search); -TP<n> for a single size
+<Model>-DGX-Spark-TP<min>-TP<max>[-<Engine>]/   name always carries the TP range (search); -TP<n> for a single size;
+                       an engine other than vLLM as a suffix (-TensorFold)
   README.md            sections, in order: quick-glance table · requirements · quick start (setup.sh, per node count)
                        · settings · how it works · benchmarks · troubleshooting · credits · license
   recipe.yaml          metadata + the `setup:` block the kit reads (template/recipe.yaml)
@@ -101,6 +123,7 @@ Every recipe repo looks like this:
   run.sh               tpN | stop | status | logs; DRY_RUN=1 prints the docker commands
   lib/common.sh        shared launcher pieces; sources kit/lib/nccl.sh for the network
   recipes/tpN.sh       one launcher per TP size
+  docker/Dockerfile    only for an engine with no published image: installs it from upstream at a pinned commit
   patches/<name>/      each with PROVENANCE.md (source, commit, author, what changed, sha256)
   scripts/             smoke-test.sh (runs the kit's) + recipe-specific helpers (prepare steps)
   .github/             issue template asking for the setup report
@@ -113,7 +136,7 @@ Every recipe repo looks like this:
 Rules:
 - **Every TP size a recipe ships gets benched on our own Sparks** with `bench/bench.sh` before `recipe.yaml` marks
   it `verified: true`. Numbers taken from upstream are labelled as upstream figures until then.
-- Pin the image (tag and digest) and the model revision.
+- Pin the image (tag and digest; for a built image, the engine commit and the base image digest) and the model revision.
 - Credit upstream work in NOTICE and PROVENANCE.md. Don't copy code across incompatible licences.
 - No hardcoded hostnames, IPs or home paths anywhere outside `cluster.env`.
 - Publish private first; flip to public after review.

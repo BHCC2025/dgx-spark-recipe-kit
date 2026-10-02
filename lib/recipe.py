@@ -17,7 +17,14 @@ try:
         "R_NAME": r["name"], "R_HF_REPO": r["model"]["hf_repo"], "R_REVISION": r["model"].get("revision", "main"),
         "R_IMAGE": r["engine"]["image"], "R_DISK_GB": s.get("disk_gb", r["model"].get("size_on_disk_gb", 0)),
         "R_MODEL_DIR": s["model_dir"], "R_TP": " ".join(str(t) for t in s["tp_sizes"]), "R_SMOKE": s.get("smoke_test", ""),
+        # engine.build: a Dockerfile in the recipe; setup builds the image from it instead of pulling (TensorFold)
+        "R_ENGINE": r["engine"].get("name", "vllm"), "R_BUILD": r["engine"].get("build", ""),
     }
+    # model.draft + setup.draft_dir: a separate draft model that setup downloads and copies like the model. (Without
+    # setup.draft_dir the recipe fetches its draft model itself, in a prepare step.)
+    d = r["model"].get("draft")
+    if d and s.get("draft_dir"):
+        out.update({"R_DRAFT_REPO": d["hf_repo"], "R_DRAFT_REV": d.get("revision", "main"), "R_DRAFT_DIR": s["draft_dir"]})
     for n, cmds in (s.get("prepare") or {}).items():
         out[f"R_PREPARE_{n}"] = "\n".join(cmds if isinstance(cmds, list) else [cmds])
     for n, cmd in (s.get("first_run") or {}).items():

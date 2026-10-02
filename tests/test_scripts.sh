@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# tests/test_scripts.sh — the kit's shell pieces without any hardware: new-recipe.sh for every TP range (no leftover
-# placeholders, DRY_RUN commands for every size, clear errors), load_cluster_env precedence, and the bench guard
+# tests/test_scripts.sh — the kit's shell pieces without any hardware: new-recipe.sh for every TP range and both engines
+# (no leftover placeholders, DRY_RUN commands for every size, clear errors), load_cluster_env precedence, and the bench guard
 # against a stand-in OpenAI-style server. Needs bash, python3 and curl.
 set -uo pipefail
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -68,6 +68,81 @@ check "new-recipe rejects a bad --model"       bash -c "! '$KIT/new-recipe.sh' -
 d="$T/r1-2"
 check "run.sh refuses a size the recipe lacks" bash -c "cd '$d' && ! DRY_RUN=1 ./run.sh tp3"
 check "real launch without the model stops"    bash -c "cd '$d' && ./run.sh tp1 2>&1 | grep -q 'MODEL MISSING'"
+
+# ---- new-recipe.sh --engine tensorfold --------------------------------------------------------------------------
+declare -A TFNAME=([1]=Test-Model-DGX-Spark-TP1-TensorFold [2]=Test-Model-DGX-Spark-TP2-TensorFold
+                   [1-2]=Test-Model-DGX-Spark-TP1-TP2-TensorFold)
+for tp in 1 2 1-2; do
+  d="$T/tf$tp"
+  if ! "$KIT/new-recipe.sh" --engine tensorfold --model Test-Model --hf org/Test-Model-MLX-4bit --draft org/Test-Draft \
+       --tp "$tp" --out "$d" > "$T/gen.out" 2>&1; then
+    fail "tensorfold --tp $tp: $(tail -1 "$T/gen.out")"; continue; fi
+  grep -q "^name: ${TFNAME[$tp]}\$" "$d/recipe.yaml" && ok "tensorfold --tp $tp: name ${TFNAME[$tp]}" || fail "tensorfold --tp $tp: name"
+  left=$(grep -rn --exclude=LICENSE -E '\{\{[A-Z_]+\}\}' "$d" | head -3)
+  [ -z "$left" ] && ok "tensorfold --tp $tp: no placeholders left" || fail "tensorfold --tp $tp: placeholders left: $left"
+  [ ! -e "$d/engines" ] && [ -f "$d/docker/Dockerfile" ] && [ ! -e "$d/recipes/tp3.sh" ] \
+    && ok "tensorfold --tp $tp: overlay applied (Dockerfile, no engines/, no tp3)" || fail "tensorfold --tp $tp: overlay"
+  python3 - "$d" "$tp" <<'PY' && ok "tensorfold --tp $tp: links resolve, no markers left, text fits the sizes" || fail "tensorfold --tp $tp: docs"
+import os, re, sys
+d, tp = sys.argv[1], sys.argv[2]
+bad = []
+for root, _, files in os.walk(d):
+    for f in files:
+        if not f.endswith(".md"): continue
+        p = os.path.join(root, f); s = open(p).read()
+        if "<!--" in s: bad.append(f"{f}: marker left")
+        if "vLLM" in s or "GMU" in s: bad.append(f"{f}: mentions vLLM settings")
+        for link in re.findall(r"\]\(([^)#:]+)\)", s):
+            if not link.startswith("http") and not os.path.exists(os.path.join(root, link)): bad.append(f"{f}: broken link {link}")
+r = open(os.path.join(d, "README.md")).read()
+if not r.splitlines()[2].startswith("Built on [TensorFold]"): bad.append("README: no 'Built on TensorFold' opening line")
+if tp == "1":
+    for w in ("worker", "fabric", "NCCL", "networking.md"):
+        if w in r: bad.append(f"README (TP1 only) mentions {w}")
+if bad: print("\n".join(bad)); sys.exit(1)
+PY
+  for f in run.sh lib/common.sh recipes/*.sh bench/bench.sh scripts/smoke-test.sh setup.sh; do
+    (cd "$d" && bash -n $f) || fail "tensorfold --tp $tp: bash -n $f"; done
+  python3 - "$d/recipe.yaml" "$KIT/lib/recipe.py" <<'PY' && ok "tensorfold --tp $tp: recipe.yaml parses, setup sees build + draft" || fail "tensorfold --tp $tp: recipe.yaml"
+import subprocess, sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+y = yaml.safe_load(open(sys.argv[1]))
+assert y["engine"]["name"] == "tensorfold" and y["engine"]["build"] == "docker/Dockerfile"
+assert y["setup"]["draft_dir"] == "/var/tmp/models/Test-Draft" and y["model"]["draft"]["hf_repo"] == "org/Test-Draft"
+assert [r["id"] for r in y["recipes"]] == [f"tp{n}" for n in y["setup"]["tp_sizes"]]
+out = subprocess.run([sys.executable, sys.argv[2], sys.argv[1]], capture_output=True, text=True, check=True).stdout
+assert "R_BUILD=docker/Dockerfile" in out and "R_DRAFT_REPO=org/Test-Draft" in out and "R_ENGINE=tensorfold" in out, out
+PY
+  ln -s "$KIT" "$d/kit"; cp "$d/cluster.env.example" "$d/cluster.env"
+  for n in 1 2; do
+    [ -f "$d/recipes/tp$n.sh" ] || continue
+    (cd "$d" && DRY_RUN=1 ./run.sh tp$n 2>/dev/null) > "$T/dry.out"
+    c=$(grep -c '^docker ' "$T/dry.out")
+    [ "$c" = "$n" ] && grep -q -- '--drafter /models/draft' "$T/dry.out" && grep -q 'tensorfold serve /models/test-model' "$T/dry.out" \
+      && ok "tensorfold --tp $tp: DRY_RUN tp$n prints $n tensorfold command(s) with the draft model" \
+      || fail "tensorfold --tp $tp: DRY_RUN tp$n gave $c: $(head -c 300 "$T/dry.out")"
+    if [ "$n" = 2 ]; then
+      r1=$(grep '^docker ' "$T/dry.out" | head -1); r0=$(grep '^docker ' "$T/dry.out" | tail -1)
+      [[ "$r1" == *"--rank 1 "* && "$r1" != *"--port"* && "$r0" == *"--rank 0 "* && "$r0" == *"--port 8000"* \
+         && "$r0" == *"--master 10.10.20.1"* && "$r1" == *"NCCL_IB_HCA=rocep1s0f1"* ]] \
+        && ok "tensorfold --tp $tp: TP2 ranks (endpoint on rank 0 only, pair NCCL profile)" || fail "tensorfold --tp $tp: TP2 rank args"
+    fi
+  done
+done
+c=$(cd "$T/tf1-2" && DRY_RUN=1 DRAFTS=0 PARALLEL=4 CONTEXT=65536 ./run.sh tp2 2>/dev/null | grep -c -- '--no-drafts --tp 2')
+[ "$c" = 2 ] && grep -q . <(cd "$T/tf1-2" && DRY_RUN=1 PARALLEL=4 CONTEXT=65536 ./run.sh tp2 2>/dev/null | grep -- '--parallel 4 --context 65536') \
+  && ok "tensorfold knobs reach both ranks (DRAFTS=0, PARALLEL, CONTEXT)" || fail "tensorfold knobs ($c)"
+check "new-recipe refuses tensorfold at TP3"      bash -c "! '$KIT/new-recipe.sh' --engine tensorfold --model X --hf org/x --tp 1-3 --out '$T/bad'"
+check "new-recipe refuses --draft for vllm"        bash -c "! '$KIT/new-recipe.sh' --model X --hf org/x --draft org/y --tp 1 --out '$T/bad'"
+
+# ---- concurrent-summary.py ------------------------------------------------------------------------------------------
+cell='{"prompt": "code", "temperature": 0.0, "streams": 8, "failed": 0, "aggregate_tps": 300.0, "per_stream_tps": 40.0, "ttft_s_max": 0.1, "alone": {"equal": 8, "unequal": %d, "failed": 0}}'
+printf '{"cells": [%s]}' "$(printf "$cell" 0)" > "$T/c-ok.json"; printf '{"cells": [%s]}' "$(printf "$cell" 1)" > "$T/c-bad.json"
+python3 "$KIT/bench/concurrent-summary.py" "$T/c-ok.json" | grep -q "ALL EQUAL" && ! python3 "$KIT/bench/concurrent-summary.py" "$T/c-bad.json" >/dev/null \
+  && ok "concurrent summary: passes equal replies, fails an unequal one" || fail "concurrent summary"
 
 # ---- load_cluster_env --------------------------------------------------------------------------------------------
 cat > "$T/c.env" <<'X'

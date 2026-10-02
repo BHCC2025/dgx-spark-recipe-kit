@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """probe.py — describe one DGX Spark as JSON. Read-only, stdlib only, runs as the normal user.
 
-usage: python3 probe.py [--image IMAGE] [--model-dir DIR] [--no-neighbors]
+usage: python3 probe.py [--image IMAGE] [--model-dir DIR] [--draft-dir DIR] [--no-neighbors]
 
 Reports OS/GPU/memory, which tools exist, Docker access, disk space where the model will go, the LAN interface,
 and every RDMA port: its netdevs, link state, IPv4/IPv6 addresses, the RoCE v2 IPv4 GID index, and which other
@@ -117,6 +117,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", default="")
     ap.add_argument("--model-dir", default="")
+    ap.add_argument("--draft-dir", default="")
     ap.add_argument("--no-neighbors", action="store_true")
     a = ap.parse_args()
 
@@ -145,6 +146,7 @@ def main():
         "docker_ok": rc_docker == 0, "sudo_nopass": rc_sudo == 0, "networkmanager": rc_nm == 0,
         "containers": [c for c in containers.splitlines() if c], "image_present": rc_img == 0,
         "model_dir": a.model_dir, "model_state": model_state(a.model_dir),
+        "draft_dir": a.draft_dir, "draft_state": model_state(a.draft_dir),
         "disk_free_gb": disk_free // 10**9, "disk_path": disk_path,
         "lan_if": lan_if, "lan_ipv4": lan_v4, "rdma": rdma_ports(not a.no_neighbors),
     }, indent=1))

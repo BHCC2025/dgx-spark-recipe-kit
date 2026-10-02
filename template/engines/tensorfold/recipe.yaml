@@ -1,0 +1,36 @@
+# recipe.yaml — machine-readable summary. Same schema in every BHCC2025 DGX Spark recipe repo.
+schema: 1
+name: {{REPO}}
+model:
+  hf_repo: {{HF_REPO}}
+  # TODO: the full commit sha: git ls-remote https://huggingface.co/{{HF_REPO}} HEAD
+  revision: TODO
+  size_on_disk_gb: 0         # TODO
+  quantization: TODO         # e.g. MLX affine 4-bit, groups of 64
+{{DRAFT_YAML}}engine:
+  name: tensorfold
+  version: {{TF_VERSION}}
+  source: https://github.com/ashhart/TensorFold
+  commit: {{TF_COMMIT}}
+  # TensorFold publishes no image: ./setup.sh builds `image` from `build` (upstream TensorFold at `commit`, unmodified)
+  image: {{IMAGE}}
+  build: docker/Dockerfile
+  base_image: {{BASE_IMAGE}}
+  base_image_digest: TODO    # docker image inspect --format '{{.RepoDigests}}' {{BASE_IMAGE}}
+hardware: NVIDIA DGX Spark (GB10, 128 GB unified memory)
+api: {port: 8000, served_model_name: {{SERVED}}, openai_compatible: true}
+
+setup:                       # read by kit/setup.sh
+  # model_dir: the default; the same path on every node
+  model_dir: {{MODEL_DIR}}
+{{DRAFT_DIR_YAML}}  disk_gb: 0                 # TODO: free space needed per node
+  # tp_sizes: the node counts this recipe supports (one recipes/tpN.sh each)
+  tp_sizes: [{{TP_LIST}}]
+  # prepare:                 # optional commands run on the head after the model is on every node, keyed by node count
+  #   2: [scripts/<prep>.sh]
+  first_run: {{{FIRST_RUN}}}
+  smoke_test: scripts/smoke-test.sh
+
+# verified: true only after bench/bench.sh ran on our own Sparks with this repo's launcher.
+recipes:
+{{RECIPES}}
