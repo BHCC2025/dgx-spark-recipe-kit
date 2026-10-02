@@ -57,6 +57,8 @@ Every number is benched on our own Sparks with the recipe's `bench/bench.sh`; se
   `./run.sh tp2` and passed `CONCURRENT=1,8 bench/bench.sh` (48 / 48 concurrent replies equal to the request alone).
   The image copy to a worker (`docker save | docker load`) was run by hand with the same command, not yet through
   `setup.sh`.
+- **Known issue:** `setup.sh` takes `NODES[0]` to be the machine it runs on without checking; run on one Spark with
+  `--nodes` naming other machines, it reports a misleading cabling FAIL. Run it on the head, listed first.
 - **Not tested yet:** other DGX OS releases, machines without NetworkManager (the netplan path), a switch instead of
   direct cables, more than three nodes, and a full first model download on a new account (the download test in
   step 3 is tested with an ungated, a gated and a missing repo). If you try one of these, please open an issue with
@@ -75,7 +77,7 @@ Every number is benched on our own Sparks with the recipe's `bench/bench.sh`; se
 | `lib/recipe.py` | reads `recipe.yaml` for setup |
 | `lib/new_recipe.py` | the generator behind `new-recipe.sh` |
 | `lib/cluster_env.sh` | `load_cluster_env`: a recipe loads `cluster.env` with it, so a value set in the environment wins for one run (`PORT=8001 ./run.sh tp1`) |
-| `bench/` | the shared benchmark (`bench.sh` + its Python helpers) and smoke test. `CONCURRENT=1,8` adds a multi-user test (TensorFold recipes: the engine's own `tools/bench_concurrent.py`, run inside the recipe's container, summarised by `concurrent-summary.py`). A recipe's `bench/bench.sh` and `scripts/smoke-test.sh` just run these, so every recipe is measured the same way. `bench.sh` refuses to file results under a recipe unless the server is serving that recipe's model; `BENCH_OUT=<dir>` benches anything else |
+| `bench/` | the shared benchmark (`bench.sh` + its Python helpers) and smoke test. `CONCURRENT=1,8` adds a multi-user test (TensorFold recipes: the engine's own `tools/bench_concurrent.py`, run inside the recipe's container, summarised by `concurrent-summary.py`). A recipe's `bench/bench.sh` and `scripts/smoke-test.sh` just run these, so every recipe is measured the same way. `bench.sh` refuses to file results under a recipe unless the server is serving that recipe's model; `BENCH_OUT=<dir>` benches anything else. `SMOKE_NO_THINK=1` sends the smoke test's direct-answer checks (arithmetic, fact, code) with thinking off, for models that think past their token budgets (a recipe sets it in its `scripts/smoke-test.sh` wrapper) |
 | `new-recipe.sh` | creates a new recipe repo from `template/` (below) |
 | `template/` | the complete starting layout of a recipe repo, with `{{...}}` placeholders that `new-recipe.sh` fills in. `template/engines/<engine>/` is laid over it for an engine other than vLLM (today: `tensorfold`) |
 | `tests/` | hardware-free tests, run by CI on every push: `bash tests/run.sh` |
