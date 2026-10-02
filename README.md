@@ -16,8 +16,9 @@ git clone https://github.com/BHCC2025/<recipe>.git && cd <recipe>
 
 | Recipe | Sparks | Engine | Single-stream decode, code (fastest setup) |
 |---|---|---|---|
-| [Qwen3.8-Flash-Next-DGX-Spark-TP1-TP3](https://github.com/BHCC2025/Qwen3.8-Flash-Next-DGX-Spark-TP1-TP3) | 1–3 | vLLM | 62.8 tok/s (3 Sparks) |
+| [Qwen3.8-27B-DGX-Spark-TP2-TensorFold](https://github.com/BHCC2025/Qwen3.8-27B-DGX-Spark-TP2-TensorFold) | 2 | TensorFold | 98.9 tok/s (2 Sparks) |
 | [Gemma-4-31B-IT-DGX-Spark-TP1-TP2](https://github.com/BHCC2025/Gemma-4-31B-IT-DGX-Spark-TP1-TP2) | 1–2 | vLLM | 40.6 tok/s (2 Sparks) |
+| [Qwen3.8-Flash-Next-DGX-Spark-TP1-TP3](https://github.com/BHCC2025/Qwen3.8-Flash-Next-DGX-Spark-TP1-TP3) (archived) | 1–3 | vLLM | 62.8 tok/s (3 Sparks) |
 
 Every number is benched on our own Sparks with the recipe's `bench/bench.sh`; see each recipe's `bench/results/`.
 
